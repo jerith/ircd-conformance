@@ -1,23 +1,35 @@
 package ircd_conformance.client
 
-import akka.actor.{ Actor, ActorLogging, ActorRef, ActorSystem, Props, Terminated }
-import akka.io.{ IO, Tcp }
+import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props, Terminated}
+import akka.event.LoggingReceive
+import akka.io.{IO, Tcp}
 import akka.util.ByteString
 import java.net.InetSocketAddress
-import akka.event.LoggingReceive
 import scala.util.parsing.combinator.Parsers
 import scala.util.parsing.input.CharSequenceReader
 
+
+/**
+  * Internally, we work with ISO-8859-1 strings, rather than bytestrings.
+  */
+
+object bsutils {
+  def b2s(bytes: ByteString): String = bytes.decodeString("ISO-8859-1")
+  def s2b(str: String): ByteString = ByteString(str, "ISO-8859-1")
+  val bcrlf = s2b("\r\n")
+}
+
+
 case class IrcMessage(prefix: String, command: String, params: List[String]) {
   private val prefixString = if (prefix == "") "" else ":" + prefix + " "
-  val bytes = ByteString(prefixString + (command :: params).mkString(" "))
+  val bytes = bsutils.s2b(prefixString + (command :: params).mkString(" "))
 }
 
 object IrcMessage {
-  def apply(prefix: String, command: String) =
+  def apply(prefix: String, command: String): IrcMessage =
     new IrcMessage(prefix, command, Nil)
 
-  def apply(command: String, params: List[String] = Nil) =
+  def apply(command: String, params: List[String] = Nil): IrcMessage =
     new IrcMessage("", command, params)
 
   object IrcMessageParser extends Parsers {
@@ -47,14 +59,14 @@ object IrcMessage {
         new IrcMessage(prefix.getOrElse(""), command, params)
     }
 
-    def parse(bytes: ByteString) =
-      phrase(message)(new CharSequenceReader(bytes.utf8String)) match {
+    def parse(bytes: ByteString): IrcMessage =
+      phrase(message)(new CharSequenceReader(bsutils.b2s(bytes))) match {
         case Success(message, _) => message
         case NoSuccess(_, _) => sys.error("oops")
       }
   }
 
-  def parse(bytes: ByteString) = IrcMessageParser.parse(bytes)
+  def parse(bytes: ByteString): IrcMessage = IrcMessageParser.parse(bytes)
 }
 
 
@@ -73,7 +85,7 @@ class IrcClient(remote: InetSocketAddress, handler: ActorRef) extends Actor {
 
   def receiveData(data: ByteString): Unit = this.synchronized {
     dataBuffer ++= data
-    val nextNewline = dataBuffer.indexOfSlice(ByteString("\r\n"))
+    val nextNewline = dataBuffer.indexOfSlice(bsutils.bcrlf)
     if (nextNewline >= 0) {
       val line = dataBuffer.take(nextNewline)
       dataBuffer = dataBuffer.drop(nextNewline + 2)
@@ -85,24 +97,25 @@ class IrcClient(remote: InetSocketAddress, handler: ActorRef) extends Actor {
   def receive_connected(conn: ActorRef): Receive = LoggingReceive {
     // TCP things
     case CommandFailed(w: Write) =>
-      // O/S buffer was full
       handler ! "write failed"
     case Received(data) =>
       receiveData(data)
     case _: ConnectionClosed =>
       handler ! "disconnected"
-      context stop self
+      context stop conn
 
     // Other things
+    case Terminated(`conn`) =>
+      context stop self
     case data: ByteString =>
       conn ! Write(data)
     case msg: IrcMessage =>
-      conn ! Write(msg.bytes ++ ByteString("\r\n"))
+      conn ! Write(msg.bytes ++ bsutils.bcrlf)
     case "close" =>
       conn ! Close
   }
 
-  def receive = LoggingReceive {
+  def receive: Receive = LoggingReceive {
     case CommandFailed(_: Connect) =>
       handler ! "connect failed"
       context stop self
@@ -111,6 +124,7 @@ class IrcClient(remote: InetSocketAddress, handler: ActorRef) extends Actor {
       handler ! c
       val connection = sender()
       connection ! Register(self)
+      context watch connection
       context become receive_connected(connection)
   }
 }

@@ -1,11 +1,11 @@
 package ircd_conformance.test
 
-import akka.actor.{ Actor, ActorLogging, ActorRef, ActorSystem, Props, Terminated }
-import akka.io.{ IO, Tcp }
+import akka.actor.{Actor, ActorRef, ActorSystem, Props, Terminated}
+import akka.event.LoggingReceive
+import akka.io.{IO, Tcp}
 import akka.util.ByteString
 import java.net.InetSocketAddress
-import scala.concurrent.Promise
-import akka.event.LoggingReceive
+import scala.concurrent.{Future, Promise}
 
 object FakeServer {
   def props(endpoint: InetSocketAddress, handler: ActorRef): Props =
@@ -18,35 +18,58 @@ class FakeServer(endpoint: InetSocketAddress, val handler: ActorRef) extends Act
   import context.dispatcher
 
   IO(Tcp) ! Bind(self, endpoint)
+  var listener: ActorRef = _
 
   val addrPromise = Promise[InetSocketAddress]()
-  var clients = Map[InetSocketAddress, ActorRef]()
+  var clients = Map[InetSocketAddress, (ActorRef, Promise[ActorRef])]()
+  val listenerPromise = Promise[ActorRef]()
+
+  def addClient(remote: InetSocketAddress) = {
+    val client = context.actorOf(
+      ConnectionHandler.props(remote, sender, handler),
+      s"c:${remote.getPort}")
+    context.watch(client)
+    clients += remote -> (client, Promise[ActorRef]())
+    sender ! Tcp.Register(client)
+    handler ! ("connected", remote)
+  }
+
+  def removeClient(client: ActorRef) = {
+    clients.find(_._2._1 == client) map { case (remote, (_, promise)) =>
+      clients -= remote
+      handler ! ("disconnected", remote)
+      promise.success(client)
+    }
+  }
 
   override def receive: Receive = LoggingReceive {
-    case b @ Bound(localAddress) =>
+    case Bound(localAddress) =>
+      listener = sender
+      context watch listener
       addrPromise.success(localAddress)
+    case Unbound =>
+      context stop listener
+    case Connected(remote, _) =>
+      addClient(remote)
+    case Terminated(client) =>
+      if (client == listener) listenerPromise.success(listener)
+      else removeClient(client)
+    case (remote: InetSocketAddress, data) =>
+      clients.get(remote).map(_._1 ! data)
+    // Our stuff
     case "addr" =>
       val asker = sender
       addrPromise.future.onSuccess {
         case addr =>
           asker ! addr
       }
-    case Tcp.Connected(remote, _) =>
-      val client = context.actorOf(
-        ConnectionHandler.props(remote, sender, handler),
-        s"c:${remote.getPort}")
-      context.watch(client)
-      clients += remote -> client
-      sender ! Tcp.Register(client)
-      handler ! ("connected", remote)
-    case Terminated(client) =>
-      val remote = clients.find(_._2 == client).map(_._1)
-      remote.map { remote =>
-        clients -= remote
-        handler ! ("disconnected", remote)
+    case "close" =>
+      val promises = clients.values.map(_._2) ++ Seq(listenerPromise)
+      Future.sequence(promises.map(_.future)) onComplete {
+        case _ => context stop self
       }
-    case (remote: InetSocketAddress, data) =>
-      clients.get(remote).map(_ ! data)
+      listener ! Unbind
+      clients.values.foreach(_._1 ! "close")
   }
 }
 
@@ -58,17 +81,17 @@ object ConnectionHandler {
 class ConnectionHandler(remote: InetSocketAddress, conn: ActorRef, handler: ActorRef) extends Actor {
   import Tcp._
 
-  context.watch(conn)
+  context watch conn
 
   def receive: Receive = LoggingReceive {
     case "close" =>
-      context.stop(self)
+      conn ! Close
     case Received(data) =>
       handler ! (remote, data)
-    case _: Tcp.ConnectionClosed =>
-      context.stop(self)
+    case _: ConnectionClosed =>
+      context stop conn
     case Terminated(`conn`) =>
-      context.stop(self)
+      context stop self
     case data: ByteString =>
       conn ! Write(data)
   }

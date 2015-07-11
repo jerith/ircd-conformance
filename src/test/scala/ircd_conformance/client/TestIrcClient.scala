@@ -1,34 +1,36 @@
 package ircd_conformance.test
 
-import scala.language.postfixOps
-import akka.actor.{ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props, Terminated}
+import akka.io.Tcp.Connected
+import akka.pattern.ask
 import akka.testkit.{TestKit, TestProbe}
 import akka.util.{ByteString, Timeout}
-import akka.io.Tcp.Connected
-import ircd_conformance.client.{IrcClient, IrcMessage}
-import ircd_conformance.test.tags.InternalTest
+import com.typesafe.config.ConfigFactory
 import java.net.InetSocketAddress
 import org.scalatest._
+import scala.collection.JavaConversions._
 import scala.concurrent.Await
-import akka.pattern.ask
 import scala.concurrent.duration._
-import com.typesafe.config.ConfigFactory
-import collection.JavaConversions._
-import akka.actor.PoisonPill
+import scala.language.{implicitConversions, postfixOps}
+
+import ircd_conformance.cleanup.ActorCleanup
+import ircd_conformance.client.{IrcClient, IrcMessage}
+import ircd_conformance.test.tags.InternalTest
+import ircd_conformance.util.ByteStringHelper
 
 @InternalTest
 class TestIrcMessage extends FreeSpec with Matchers {
   val IM = IrcMessage
-  val BS = ByteString
-  def parse(msg: String) = IM.parse(BS(msg))
+  def parse(msg: ByteString) = IM.parse(msg)
+  def parse(msg: String) = IM.parse(ByteString(msg))
 
   "An IRC message" - {
 
     "should build a bytestring" in {
-      assert(IM("FOO").bytes === BS("FOO"))
-      assert(IM("prefix", "FOO").bytes === BS(":prefix FOO"))
-      assert(IM("FOO", List("bar", "baz")).bytes === BS("FOO bar baz"))
-      assert(IM("pre", "FOO", List("bar")).bytes === BS(":pre FOO bar"))
+      assert(IM("FOO").bytes === b"FOO")
+      assert(IM("prefix", "FOO").bytes === b":prefix FOO")
+      assert(IM("FOO", List("bar", "baz")).bytes === b"FOO bar baz")
+      assert(IM("pre", "FOO", List("bar")).bytes === b":pre FOO bar")
     }
 
     "should parse a bytestring" - {
@@ -75,10 +77,26 @@ class TestIrcMessage extends FreeSpec with Matchers {
           IM("me", "FOO", List("p1", ":tail p2")))
       }
 
+      "with a non-ASCII prefix" in {
+        assert(parse(b":me\xc3\x28 FOO p1 :tail p2") ===
+          IM("me\u00c3\u0028", "FOO", List("p1", ":tail p2")))
+      }
+
+      "with a non-ASCII command" in {
+        assert(parse(b":me FOO\xc3\x28 p1 :tail p2") ===
+          IM("me", "FOO\u00c3\u0028", List("p1", ":tail p2")))
+      }
+
+      "with a non-ASCII params" in {
+        assert(parse(b":me FOO p1\xc3\x28 :tail p2") ===
+          IM("me", "FOO", List("p1\u00c3\u0028", ":tail p2")))
+        assert(parse(b":me FOO p1 :tail p2\xc3\x28") ===
+          IM("me", "FOO", List("p1", ":tail p2\u00c3\u0028")))
+      }
+
     }
   }
 }
-
 
 @InternalTest
 class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
@@ -94,36 +112,36 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
     TestKit.shutdownActorSystem(system)
   }
 
-  var actors: Seq[ActorRef] = Nil
+  var actorcleanup: ActorCleanup = _
 
   override def withFixture(test: NoArgTest) = {
-    actors = Nil
-    _system.log.debug("Starting test <{}>", test.name)
+    actorcleanup = new ActorCleanup(system)
+    system.log.debug("\r\n\r\n======= Starting test <{}>", test.name)
     try super.withFixture(test) // Invoke the test function
     finally {
-      _system.log.debug("Cleaning up test <{}>", test.name)
-      val deathwatch = TestProbe()
-      actors.reverse.foreach { actor =>
-        deathwatch.watch(actor)
-        actor ! PoisonPill
-        deathwatch.expectTerminated(actor, 100 millis)
-      }
-      _system.log.debug("Finished test <{}>", test.name)
+      system.log.debug("\r\n======= Cleaning up test <{}>", test.name)
+      actorcleanup.cleanup()
+      system.log.debug("\r\n======= Finished test <{}>\r\n", test.name)
     }
   }
 
   "An IRC client" - {
 
-    case class ActorInfo(val ref: ActorRef, val probe: TestProbe, val addr: InetSocketAddress)
+    case class ActorInfo(ref: ActorRef, probe: TestProbe, addr: InetSocketAddress) {
+      // For some reason, ! doesn't get proxied.
+      val ! = ref.!(_)
+    }
+
+    implicit def info2ref(ai: ActorInfo): ActorRef = ai.ref
+    implicit def info2probe(ai: ActorInfo): TestProbe = ai.probe
 
     implicit val timeout = Timeout(150 millis)
 
     def startServer() = {
       val probe = TestProbe()
       val listenAddr = new InetSocketAddress("localhost", 0)
-      val server = system.actorOf(
+      val server = actorcleanup.actorOf(
         FakeServer.props(listenAddr, probe.ref), "server")
-      actors :+= server
       val addrFuture = server.ask("addr").mapTo[InetSocketAddress]
       val addr = Await.result(addrFuture, timeout.duration)
       ActorInfo(server, probe, addr)
@@ -131,8 +149,8 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
 
     def startClient(server: ActorInfo, name: String = "client") = {
       val probe = TestProbe()
-      val client = system.actorOf(IrcClient.props(server.addr, probe.ref), name)
-      actors :+= client
+      val client = actorcleanup.actorOf(
+        IrcClient.props(server.addr, probe.ref), name)
       val Connected(_, addr) = probe.expectMsgType[Connected]
       server.probe.expectMsg(("connected", addr))
       ActorInfo(client, probe, addr)
@@ -142,30 +160,30 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
       val server = startServer()
       val client = startClient(server)
       // startClient only returns after a connection is made.
-      client.ref ! "close"
-      server.probe.expectMsg(("disconnected", client.addr))
-      client.probe.expectMsg("disconnected")
+      client ! "close"
+      server.expectMsg(("disconnected", client.addr))
+      client.expectMsg("disconnected")
     }
 
     "should send ByteStrings" in {
       val server = startServer()
       val client = startClient(server)
-      client.ref ! ByteString("Hello")
-      server.probe.expectMsg((client.addr, ByteString("Hello")))
+      client ! ByteString("Hello")
+      server.expectMsg((client.addr, ByteString("Hello")))
     }
 
     "should send IrcMessages" in {
       val server = startServer()
       val client = startClient(server)
-      client.ref ! IrcMessage("LIST")
-      server.probe.expectMsg((client.addr, ByteString("LIST\r\n")))
+      client ! IrcMessage("LIST")
+      server.expectMsg((client.addr, ByteString("LIST\r\n")))
     }
 
     "should receive IrcMessages" in {
       val server = startServer()
       val client = startClient(server)
-      server.ref ! (client.addr, ByteString("PING :server\r\n"))
-      client.probe.expectMsg(IrcMessage("PING", List(":server")))
+      server ! (client.addr, ByteString("PING :server\r\n"))
+      client.expectMsg(IrcMessage("PING", List(":server")))
     }
 
   }
