@@ -12,7 +12,7 @@ object FakeServer {
     Props(new FakeServer(endpoint, handler))
 }
 
-class FakeServer(endpoint: InetSocketAddress, val handler: ActorRef) extends Actor {
+class FakeServer(endpoint: InetSocketAddress, handler: ActorRef) extends Actor {
   import Tcp._
   import context.system
   import context.dispatcher
@@ -64,12 +64,12 @@ class FakeServer(endpoint: InetSocketAddress, val handler: ActorRef) extends Act
           asker ! addr
       }
     case "close" =>
-      val promises = clients.values.map(_._2) ++ Seq(listenerPromise)
-      Future.sequence(promises.map(_.future)) onComplete {
-        case _ => context stop self
-      }
       listener ! Unbind
-      clients.values.foreach(_._1 ! "close")
+      listenerPromise.future onComplete { _ =>
+        clients.values.foreach(_._1 ! "close")
+        val clientsClosed = clients.values.map(_._2).map(_.future)
+        Future.sequence(clientsClosed) onComplete { _ => context stop self }
+      }
   }
 }
 

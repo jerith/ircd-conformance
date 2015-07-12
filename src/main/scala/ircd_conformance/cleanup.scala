@@ -23,24 +23,30 @@ package object cleanup {
 
     case class DeathWatch(actor: ActorRef) {
       val deathwatcher = system.actorOf(Props(new DeathWatcher(actor, this)))
+      val probe = TestProbe()(system)
+      probe.watch(deathwatcher)
 
       def shutdown() = {
-        val probe = TestProbe()(system)
-        probe.watch(deathwatcher)
         actor ! "close"
+        awaitTerminated()
+      }
+
+      def awaitTerminated() = {
         probe.expectTerminated(deathwatcher, 100 millis)
       }
     }
 
-    def watchActor(actor: ActorRef) = deathwatches :+= DeathWatch(actor)
-
-    def cleanup() =
-      deathwatches.reverse.foreach { deathwatch => deathwatch.shutdown() }
-
-    def actorOf(props: Props, name: String) = {
-      val actor = system.actorOf(props, name)
-      watchActor(actor)
+    def watchActor(actor: ActorRef) = {
+      deathwatches :+= DeathWatch(actor)
       actor
     }
+
+    def cleanup() = deathwatches.reverse.foreach(_.shutdown())
+
+    def awaitTerminated(actor: ActorRef) =
+      deathwatches.find(_.actor == actor).map(_.awaitTerminated())
+
+    def actorOf(props: Props, name: String) =
+      watchActor(system.actorOf(props, name))
   }
 }

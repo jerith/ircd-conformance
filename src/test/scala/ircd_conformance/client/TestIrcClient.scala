@@ -3,7 +3,7 @@ package ircd_conformance.test
 import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props, Terminated}
 import akka.io.Tcp.Connected
 import akka.pattern.ask
-import akka.testkit.{TestKit, TestProbe}
+import akka.testkit.{EventFilter, TestKit, TestProbe, TestEventListener}
 import akka.util.{ByteString, Timeout}
 import com.typesafe.config.ConfigFactory
 import java.net.InetSocketAddress
@@ -104,6 +104,7 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
 
   def this() =
     this(ActorSystem("TestIrcClient", ConfigFactory.parseMap(Map[String, Any](
+      "akka.loggers" -> seqAsJavaList(Seq("akka.testkit.TestEventListener")),
       // "akka.loglevel" -> "DEBUG",
       "akka.actor.debug.receive" -> true,
       "akka.log-dead-letters-during-shutdown" -> false))))
@@ -147,10 +148,10 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
       ActorInfo(server, probe, addr)
     }
 
-    def startClient(server: ActorInfo, name: String = "client") = {
+    def startClient(server: ActorInfo, name: String = "client", log: Boolean = false) = {
       val probe = TestProbe()
       val client = actorcleanup.actorOf(
-        IrcClient.props(server.addr, probe.ref), name)
+        IrcClient.props(server.addr, probe.ref, name, log), name)
       val Connected(_, addr) = probe.expectMsgType[Connected]
       server.probe.expectMsg(("connected", addr))
       ActorInfo(client, probe, addr)
@@ -163,6 +164,7 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
       client ! "close"
       server.expectMsg(("disconnected", client.addr))
       client.expectMsg("disconnected")
+      actorcleanup.awaitTerminated(client)
     }
 
     "should send ByteStrings" in {
@@ -186,5 +188,34 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
       client.expectMsg(IrcMessage("PING", List(":server")))
     }
 
+    "should log when configured to do so" in {
+      val server = startServer()
+      val client = startClient(server, name = "clientlog", log = true)
+      val inpattern = raw"<<clientlog\|\| PING :server"
+      EventFilter.info(pattern = inpattern, occurrences = 1) intercept {
+        server ! (client.addr, ByteString("PING :server\r\n"))
+        client.expectMsg(IrcMessage("PING", List(":server")))
+      }
+      val outpattern = raw"\|\|clientlog>> PING :server2"
+      EventFilter.info(pattern = outpattern, occurrences = 1) intercept {
+        client ! IrcMessage("PING", List(":server2"))
+        server.expectMsg((client.addr, ByteString("PING :server2\r\n")))
+      }
+    }
+
+    "should not log when not configured to do so" in {
+      val server = startServer()
+      val client = startClient(server, name = "clientnolog", log = false)
+      val inpattern = raw"<<clientnolog\|\| PING :server"
+      EventFilter.info(pattern = inpattern, occurrences = 0) intercept {
+        server ! (client.addr, ByteString("PING :server\r\n"))
+        client.expectMsg(IrcMessage("PING", List(":server")))
+      }
+      val outpattern = raw"\|\|clientnolog>> PING :server2"
+      EventFilter.info(pattern = outpattern, occurrences = 0) intercept {
+        client ! IrcMessage("PING", List(":server2"))
+        server.expectMsg((client.addr, ByteString("PING :server2\r\n")))
+      }
+    }
   }
 }

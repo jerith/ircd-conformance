@@ -23,6 +23,7 @@ object bsutils {
 case class IrcMessage(prefix: String, command: String, params: List[String]) {
   private val prefixString = if (prefix == "") "" else ":" + prefix + " "
   val bytes = bsutils.s2b(prefixString + (command :: params).mkString(" "))
+  override def toString(): String = bsutils.b2s(bytes)
 }
 
 object IrcMessage {
@@ -71,11 +72,11 @@ object IrcMessage {
 
 
 object IrcClient {
-  def props(remote: InetSocketAddress, replies: ActorRef) =
-    Props(classOf[IrcClient], remote, replies)
+  def props(remote: InetSocketAddress, replies: ActorRef, name: String, logMessages: Boolean) =
+    Props(classOf[IrcClient], remote, replies, name, logMessages)
 }
 
-class IrcClient(remote: InetSocketAddress, handler: ActorRef) extends Actor {
+class IrcClient(remote: InetSocketAddress, handler: ActorRef, name: String, logMessages: Boolean) extends Actor {
   import Tcp._
   import context.system
 
@@ -89,10 +90,15 @@ class IrcClient(remote: InetSocketAddress, handler: ActorRef) extends Actor {
     if (nextNewline >= 0) {
       val line = dataBuffer.take(nextNewline)
       dataBuffer = dataBuffer.drop(nextNewline + 2)
-      handler ! IrcMessage.parse(line)
+      val msg = IrcMessage.parse(line)
+      logIrcMessage(msg, s"<<$name||")
+      handler ! msg
       receiveData(ByteString())
     }
   }
+
+  def logIrcMessage(msg: IrcMessage, prefix: String) =
+    if (logMessages) system.log.info("\r\n {} {}", prefix, msg)
 
   def receive_connected(conn: ActorRef): Receive = LoggingReceive {
     // TCP things
@@ -110,6 +116,7 @@ class IrcClient(remote: InetSocketAddress, handler: ActorRef) extends Actor {
     case data: ByteString =>
       conn ! Write(data)
     case msg: IrcMessage =>
+      logIrcMessage(msg, s"||$name>>")
       conn ! Write(msg.bytes ++ bsutils.bcrlf)
     case "close" =>
       conn ! Close
