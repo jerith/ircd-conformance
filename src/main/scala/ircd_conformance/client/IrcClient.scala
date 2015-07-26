@@ -40,8 +40,8 @@ object IrcMessage {
 
     type Elem = Char
 
-    def space: Parser[Unit] = elem(' ') ^^^ ()
-    def ch: Parser[Elem] = elem("ch", _ != ' ')
+    val space = ' '
+    def ch: Parser[Elem] = elem("ch", _ != space)
     def anych: Parser[Elem] = elem("anych", _ => true)
     def word: Parser[String] = (ch*) ^^ (_.mkString)
 

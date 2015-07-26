@@ -8,6 +8,7 @@ import akka.testkit.{TestActor, TestKit, TestProbe}
 import akka.util.{ByteString, Timeout}
 import com.typesafe.config.{Config, ConfigFactory}
 import org.scalatest._
+import org.scalatest.prop.GeneratorDrivenPropertyChecks
 import scala.collection.JavaConversions._
 import scala.concurrent.Await
 import scala.concurrent.duration._
@@ -25,8 +26,10 @@ object TestConformance {
   def apply(config: Config) = new TestConformance(config)
 }
 
-class TestConformance(config: Config) extends TestKit(ActorSystem("TestConformance", config))
-    with FreeSpecLike with Matchers with BeforeAndAfterAll {
+class TestConformance(config: Config)
+    extends TestKit(ActorSystem("TestConformance", config))
+    with FreeSpecLike with Matchers with BeforeAndAfterAll
+    with GeneratorDrivenPropertyChecks {
 
   override def afterAll {
     TestKit.shutdownActorSystem(system)
