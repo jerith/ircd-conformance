@@ -19,6 +19,7 @@ import ircd_conformance.cleanup.ActorCleanup
 import ircd_conformance.client.{IrcClient, IrcMessage}
 import ircd_conformance.clienthelper.ClientHelper
 import ircd_conformance.constants._
+import ircd_conformance.generators.Generators
 import ircd_conformance.matchers.CustomMatchers._
 
 
@@ -87,6 +88,36 @@ class TestConformance(config: Config)
         client2 ! IrcMessage("NICK", List("dupnick"))
         val msg = client2.getFirstMessageMatching(ClientHelper.commandNumeric)
         msg should haveCommandIn(ERR_NICKNAMEINUSE)
+      }
+
+    }
+
+    "when changing nicks" - {
+
+      "should disallow changing to a nick that's in use" in {
+        val client1 = startClient("client1", "ircserver1").authAs("nick1")
+        val client2 = startClient("client2", "ircserver1").authAs("nick2")
+        forAll(Generators.nickname, Generators.transformCase) {
+          (nickname: String, transform: String => String) =>
+          client1 ! IrcMessage("NICK", List(nickname))
+          val r1 = client1.getFirstMessageMatching(_.command == "NICK")
+          assert(r1.params === Seq(nickname))
+          client2 ! IrcMessage("NICK", List(transform(nickname)))
+          val r2 = client2.getFirstMessageMatching(ClientHelper.commandNumeric)
+          r2 should haveCommandIn(ERR_NICKNAMEINUSE)
+        }
+      }
+
+      "should allow a wide variety of valid nicks" in {
+        val client1 = startClient("client1", "ircserver1")
+        client1 ! IrcMessage("NICK", List("orignick"))
+        client1 ! IrcMessage("USER", List("user", "0", "*", "real name"))
+        client1.getFirstMessageMatching(_.command == RPL_WELCOME)
+        forAll(Generators.nickname) { (nickname: String) =>
+          client1 ! IrcMessage("NICK", List(nickname))
+          val reply = client1.getFirstMessageMatching(_.command == "NICK")
+          assert(reply.params === Seq(nickname))
+        }
       }
 
     }

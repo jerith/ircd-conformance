@@ -39,6 +39,16 @@ case class ClientHelper(ref: ActorRef, probe: TestProbe, serveraddr: InetSocketA
     swallowIrcMessages(!p(_))
     probe.receiveOne(500 millis).asInstanceOf[IrcMessage]
   }
+
+  def authAs(nick: String) = {
+    this ! IrcMessage("NICK", List(s"_$nick"))
+    this ! IrcMessage("USER", List("user", "0", "*", "real name"))
+    this.getFirstMessageMatching(_.command == RPL_WELCOME)
+    this ! IrcMessage("NICK", List(nick))
+    val reply = this.getFirstMessageMatching(_.command == "NICK")
+    assert(reply.params == Seq(nick))
+    this
+  }
 }
 
 
