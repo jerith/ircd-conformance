@@ -8,6 +8,8 @@ import java.net.InetSocketAddress
 import scala.util.parsing.combinator.Parsers
 import scala.util.parsing.input.CharSequenceReader
 
+import ircd_conformance.addresshelper.AddressHelper.parseAddress
+
 
 /**
   * Internally, we work with ISO-8859-1 strings, rather than bytestrings.
@@ -72,15 +74,16 @@ object IrcMessage {
 
 
 object IrcClient {
-  def props(remote: InetSocketAddress, replies: ActorRef, name: String, logMessages: Boolean) =
-    Props(classOf[IrcClient], remote, replies, name, logMessages)
+  def props(remoteAddr: String, replies: ActorRef, name: String, logMessages: Boolean) =
+    Props(classOf[IrcClient], remoteAddr, replies, name, logMessages)
 }
 
-class IrcClient(remote: InetSocketAddress, handler: ActorRef, name: String, logMessages: Boolean) extends Actor {
+
+class IrcClient(remoteAddr: String, handler: ActorRef, name: String, logMessages: Boolean) extends Actor {
   import Tcp._
   import context.system
 
-  IO(Tcp) ! Connect(remote)
+  IO(Tcp) ! Connect(parseAddress(remoteAddr))
 
   var dataBuffer = ByteString()
 

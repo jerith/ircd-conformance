@@ -27,7 +27,7 @@ class FakeServer(endpoint: InetSocketAddress, handler: ActorRef) extends Actor {
   def addClient(remote: InetSocketAddress) = {
     val client = context.actorOf(
       ConnectionHandler.props(remote, sender, handler),
-      s"c:${remote.getPort}")
+      s"c:${remote.getPort()}")
     context.watch(client)
     clients += remote -> (client, Promise[ActorRef]())
     sender ! Tcp.Register(client)

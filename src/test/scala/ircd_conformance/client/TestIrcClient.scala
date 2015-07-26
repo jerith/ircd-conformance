@@ -5,7 +5,7 @@ import akka.io.Tcp.Connected
 import akka.pattern.ask
 import akka.testkit.{EventFilter, TestKit, TestProbe, TestEventListener}
 import akka.util.{ByteString, Timeout}
-import com.typesafe.config.ConfigFactory
+import com.typesafe.config.{Config, ConfigFactory}
 import java.net.InetSocketAddress
 import org.scalatest._
 import scala.collection.JavaConversions._
@@ -16,7 +16,8 @@ import scala.language.{implicitConversions, postfixOps}
 import ircd_conformance.cleanup.ActorCleanup
 import ircd_conformance.client.{IrcClient, IrcMessage}
 import ircd_conformance.test.tags.InternalTest
-import ircd_conformance.util.ByteStringHelper
+import ircd_conformance.bytestringhelper.ByteStringHelper
+import ircd_conformance.addresshelper.AddressHelper._
 
 @InternalTest
 class TestIrcMessage extends FreeSpec with Matchers {
@@ -99,21 +100,16 @@ class TestIrcMessage extends FreeSpec with Matchers {
 }
 
 @InternalTest
-class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
+class TestIrcClient(config: Config = ConfigFactory.load())
+    extends TestKit(ActorSystem("TestIrcClient", config))
     with FreeSpecLike with Matchers with BeforeAndAfterAll {
-
-  def this() =
-    this(ActorSystem("TestIrcClient", ConfigFactory.parseMap(Map[String, Any](
-      "akka.loggers" -> seqAsJavaList(Seq("akka.testkit.TestEventListener")),
-      // "akka.loglevel" -> "DEBUG",
-      "akka.actor.debug.receive" -> true,
-      "akka.log-dead-letters-during-shutdown" -> false))))
 
   override def afterAll {
     TestKit.shutdownActorSystem(system)
   }
 
-  var actorcleanup: ActorCleanup = _
+  implicit var actorcleanup: ActorCleanup = _
+  val timeoutMillis = config.getInt("conformance.timeout")
 
   override def withFixture(test: NoArgTest) = {
     actorcleanup = new ActorCleanup(system)
@@ -136,7 +132,7 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
     implicit def info2ref(ai: ActorInfo): ActorRef = ai.ref
     implicit def info2probe(ai: ActorInfo): TestProbe = ai.probe
 
-    implicit val timeout = Timeout(150 millis)
+    implicit val timeout = Timeout(timeoutMillis millis)
 
     def startServer() = {
       val probe = TestProbe()
@@ -151,7 +147,7 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
     def startClient(server: ActorInfo, name: String = "client", log: Boolean = false) = {
       val probe = TestProbe()
       val client = actorcleanup.actorOf(
-        IrcClient.props(server.addr, probe.ref, name, log), name)
+        IrcClient.props(addressToString(server.addr), probe.ref, name, log), name)
       val Connected(_, addr) = probe.expectMsgType[Connected]
       server.probe.expectMsg(("connected", addr))
       ActorInfo(client, probe, addr)
@@ -217,5 +213,6 @@ class TestIrcClient(_system: ActorSystem) extends TestKit(_system)
         server.expectMsg((client.addr, ByteString("PING :server2\r\n")))
       }
     }
+
   }
 }

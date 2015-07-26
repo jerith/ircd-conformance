@@ -3,7 +3,7 @@ package ircd_conformance.test
 import akka.pattern.ask
 import akka.util.ByteString
 import ircd_conformance.test.tags.InternalTest
-import ircd_conformance.util.ByteStringHelper
+import ircd_conformance.bytestringhelper.ByteStringHelper
 import org.scalatest._
 import scala.collection.JavaConversions._
 import scala.language.{implicitConversions, postfixOps}

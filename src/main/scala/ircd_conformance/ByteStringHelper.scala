@@ -3,7 +3,7 @@ package ircd_conformance
 import akka.util.{ByteString, ByteStringBuilder}
 import scala.StringContext.InvalidEscapeException
 
-package object util {
+package object bytestringhelper {
   implicit class ByteStringHelper(val sc: StringContext) extends AnyVal {
     def b(args: Any*): ByteString = {
       sc.checkLengths(args)
@@ -69,28 +69,3 @@ package object util {
     }
   }
 }
-
-
-
-//             build(input.drop(2), builder)
-//       case "" => ()
-//       case _ if input.startsWith("\\") => {
-//         if (input.length < 2)
-//           throw new InvalidEscapeException(input, -1)
-
-//         input(1) match {
-//           case '\\' | '"' | '\'' =>
-//             builder.putByte(input(1).toByte)
-//             build(input.drop(2), builder)
-//           case 'n' =>
-//             builder.putByte('\n')
-//             build(input.drop(2), builder)
-//           case _ =>
-//         }
-//       }
-//       case _ =>
-//         builder.putByte(input.head.toByte)
-//         build(input.tail, builder)
-//     }
-//   }
-// }
